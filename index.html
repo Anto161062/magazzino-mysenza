@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Magazzino MySenza – Cloud</title>
+  <meta name="theme-color" content="#0b132b" />
+  <style>
+    :root{ --bg:#0b132b; --card:#1c2541; --muted:#3a506b; --acc:#5bc0be; --acc2:#ffd166; --text:#e0e6ee; --danger:#ef476f; --ok:#06d6a0; }
+    html,body{height:100%} body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    .wrap{max-width:1100px;margin:0 auto;padding:18px}
+    header{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+    .logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--acc),var(--acc2));display:grid;place-items:center;color:#0b132b;font-weight:800}
+    h1{font-size:20px;margin:0} .badge{font-size:12px;padding:4px 8px;border-radius:999px;background:var(--muted);opacity:.9}
+    nav{margin:14px 0;display:flex;gap:8px;flex-wrap:wrap} .tab{border:1px solid var(--muted);background:#0f1a34;border-radius:10px;padding:8px 12px;cursor:pointer}
+    .tab.active{background:var(--card);border-color:var(--acc)}
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+    .card{background:var(--card);border:1px solid #2a3557;border-radius:14px;padding:14px}
+    .col-12{grid-column:span 12}.col-6{grid-column:span 12}.col-4{grid-column:span 12}.col-3{grid-column:span 12}
+    @media(min-width:900px){.col-6{grid-column:span 6}.col-4{grid-column:span 4}.col-3{grid-column:span 3}}
+    label{display:block;font-size:12px;opacity:.85;margin-bottom:4px}
+    input,select,textarea,button{width:100%;box-sizing:border-box} input,select,textarea{background:#0f1a34;border:1px solid #2a3557;color:var(--text);border-radius:10px;padding:10px}
+    button{background:var(--acc);border:none;color:#0b132b;font-weight:700;border-radius:10px;padding:10px 12px;cursor:pointer}
+    button.ghost{background:transparent;border:1px solid var(--muted);color:var(--text)} button.warn{background:var(--danger);color:#fff}
+    table{width:100%;border-collapse:collapse} th,td{padding:8px;border-bottom:1px solid #2a3557;text-align:left} th{font-size:12px;opacity:.8}
+    .right{display:flex;gap:8px;margin-left:auto} .hint{font-size:12px;opacity:.8} .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+    .kpi .card{display:grid;gap:4px} .kpi h3{margin:0;font-size:13px;opacity:.85} .kpi .val{font-size:22px;font-weight:800}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">MS</div>
+    <div>
+      <h1>Magazzino MySenza (Cloud)</h1>
+      <div class="hint">Dati centralizzati su Netlify (Blobs). Funziona su più dispositivi.</div>
+    </div>
+    <span class="badge" id="syncBadge">Sync…</span>
+    <div class="right">
+      <button id="btnPull" class="ghost">Aggiorna (Pull)</button>
+      <button id="btnPush" class="ghost">Salva (Push)</button>
+    </div>
+  </header>
+
+  <nav id="tabs"></nav>
+  <section id="view"></section>
+
+  <div class="hint" style="margin-top:12px">NB: ogni modifica importante fa un <b>Push</b> automatico. Usa <b>Pull</b> se lavori da due dispositivi in parallelo.</div>
+</div>
+
+<script>
+// ======== Cloud store (single-tenant) via Netlify Functions ========
+const API = {
+  async pull() {
+    const r = await fetch("/.netlify/functions/data", { cache: "no-store" });
+    if (!r.ok) throw new Error("Pull failed");
+    return await r.json();
+  },
+  async push(data) {
+    const r = await fetch("/.netlify/functions/data", { method: "POST", headers: { "content-type":"application/json" }, body: JSON.stringify(data) });
+    if (!r.ok) throw new Error("Push failed");
+    return await r.json();
+  },
+  async uploadPDF({ txId, type, name, file }) {
+    const qs = new URLSearchParams({ txId: String(txId), type, name });
+    const r = await fetch("/.netlify/functions/docs?" + qs.toString(), { method:"POST", body: file });
+    if (!r.ok) throw new Error("Upload failed");
+    return await r.json();
+  },
+  async listDocs() {
+    const r = await fetch("/.netlify/functions/docs?list=1");
+    if (!r.ok) throw new Error("List docs failed");
+    return await r.json();
+  },
+  async openDoc(id) {
+    const r = await fetch("/.netlify/functions/docs?id=" + encodeURIComponent(id));
+    if (!r.ok) throw new Error("Doc not found");
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+  },
+  async deleteDoc(id) {
+    const r = await fetch("/.netlify/functions/docs?id=" + encodeURIComponent(id), { method:"DELETE" });
+    if (!r.ok) throw new Error("Delete failed");
+    return await r.json();
+  }
+};
+
+const state = { products: [], transactions: [], invoicesMeta: [] };
+function setBadge(msg) { const b = document.getElementById("syncBadge"); if (b) b.textContent = msg; }
+
+async function pull() {
+  setBadge("Pull…");
+  const data = await API.pull();
+  state.products = data.products || [];
+  state.transactions = data.transactions || [];
+  state.invoicesMeta = data.invoicesMeta || [];
+  setBadge("Online");
+}
+
+async function push() {
+  setBadge("Push…");
+  await API.push({ products: state.products, transactions: state.transactions, invoicesMeta: state.invoicesMeta });
+  setBadge("Online");
+}
+
+function nextId(list){ return (Math.max(0, ...list.map(x=>x.id||0)) + 1) }
+
+// ======== UI (minimal reuse from earlier local app) ========
+const VIEWS = [
+  {id:'dashboard', label:'Dashboard'},
+  {id:'prodotti', label:'Prodotti'},
+  {id:'entrate', label:'Entrate (IN)'},
+  {id:'uscite', label:'Uscite (OUT)'},
+  {id:'documenti', label:'Documenti'}
+];
+let current='dashboard';
+
+function renderTabs(){
+  const nav = document.getElementById('tabs'); nav.innerHTML='';
+  VIEWS.forEach(v=>{
+    const b=document.createElement('button'); b.className='tab'+(current===v.id?' active':''); b.textContent=v.label; b.onclick=()=>{current=v.id; render()}; nav.appendChild(b);
+  });
+}
+
+function money(n){ return (new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'})).format(n||0) }
+function dateStr(d){ return new Date(d).toLocaleDateString('it-IT') }
+
+async function render(){
+  renderTabs();
+  const v = document.getElementById('view');
+  if(current==='dashboard'){
+    const stockVal = state.products.reduce((a,p)=> a + (p.stock||0)*(p.lastPrice||0), 0);
+    const today = new Date().toDateString();
+    const todays = state.transactions.filter(t=> new Date(t.date).toDateString()===today);
+    v.innerHTML = \`
+      <div class="grid">
+        <div class="col-12 kpi">
+          <div class="card"><h3>Prodotti</h3><div class="val">\${state.products.length}</div></div>
+          <div class="card"><h3>Valore stock</h3><div class="val">\${money(stockVal)}</div></div>
+          <div class="card"><h3>Movimenti oggi</h3><div class="val">\${todays.length}</div></div>
+          <div class="card"><h3>Documenti</h3><div class="val">\${state.invoicesMeta.length}</div></div>
+        </div>
+        <div class="col-12 card">
+          <h3 style="margin:0">Ultimi movimenti</h3>
+          <div style="overflow:auto;margin-top:8px">
+          <table><thead><tr><th>Data</th><th>Tipo</th><th>Righe</th><th>Doc</th><th>Totale</th></tr></thead><tbody>
+            \${state.transactions.slice().sort((a,b)=> new Date(b.date)-new Date(a.date)).slice(0,10).map(t=>\`
+              <tr><td>\${dateStr(t.date)}</td><td>\${t.type}</td><td>\${t.items.map(i=> (state.products.find(p=>p.id===i.productId)?.name||'?') + ' × ' + i.qty).join('<br>')}</td><td>\${t.docNo||''}</td><td>\${money(t.items.reduce((s,i)=> s+ (i.unitPrice||0)*i.qty,0))}</td></tr>\`).join('')}
+          </tbody></table>
+          </div>
+        </div>
+      </div>\`;
+  }
+  if(current==='prodotti'){
+    v.innerHTML = \`
+    <div class="grid">
+      <div class="col-12 card">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <h3 style="margin:0">Catalogo prodotti</h3>
+          <div class="right"><button class="ghost" id="btnNewProd">Nuovo prodotto</button></div>
+        </div>
+        <input id="qProd" placeholder="Cerca…" />
+        <div style="overflow:auto;margin-top:10px">
+          <table id="tblProd"><thead><tr><th>SKU</th><th>Nome</th><th>Formato</th><th>Prezzo</th><th>Stock</th><th></th></tr></thead><tbody>
+          \${state.products.slice().sort((a,b)=> (a.name||'').localeCompare(b.name||'')).map(p=>\`
+            <tr data-id="\${p.id}"><td>\${p.sku||''}</td><td>\${p.name||''}</td><td>\${p.format||''}</td><td>\${p.lastPrice?money(p.lastPrice):''}</td><td>\${p.stock||0}</td><td><button class="ghost" data-edit="\${p.id}">Modifica</button></td></tr>\`).join('')}
+          </tbody></table>
+        </div>
+      </div>
+    </div>\`;
+    document.getElementById('btnNewProd').onclick = ()=> showProdForm();
+    document.querySelectorAll('[data-edit]')?.forEach(b=> b.onclick=()=> showProdForm(Number(b.dataset.edit)));
+    document.getElementById('qProd').addEventListener('input', e=>{
+      const val = e.target.value.toLowerCase();
+      document.querySelectorAll('#tblProd tbody tr').forEach(tr=> tr.style.display = tr.textContent.toLowerCase().includes(val)?'':'none');
+    });
+  }
+  if(current==='entrate'){
+    v.innerHTML = \`
+    <div class="grid">
+      <div class="col-12 card">
+        <h3 style="margin:0">Nuova entrata (IN)</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+          <input type="date" id="inDate" value="\${new Date().toISOString().slice(0,10)}">
+          <input id="inSupplier" placeholder="Fornitore">
+          <input id="inDocNo" placeholder="Numero fattura">
+          <input type="file" id="inFile" accept="application/pdf">
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="inProd">\${state.products.map(p=> \`<option value="\${p.id}">\${p.sku||''} – \${p.name||''}</option>\`).join('')}</select>
+          <input id="inQty" type="number" min="1" value="1">
+          <input id="inPrice" type="number" step="0.01" value="0">
+          <button id="addInItem">Aggiungi riga</button>
+        </div>
+        <div id="inItemsWrap" style="margin-top:10px"></div>
+        <div class="right" style="margin-top:10px"><button id="saveIn">Registra entrata</button></div>
+      </div>
+    </div>\`;
+    bindEntrata();
+  }
+  if(current==='uscite'){
+    v.innerHTML = \`
+    <div class="grid">
+      <div class="col-12 card">
+        <h3 style="margin:0">Nuova uscita (OUT)</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+          <input type="date" id="outDate" value="\${new Date().toISOString().slice(0,10)}">
+          <input id="outCustomer" placeholder="Cliente">
+          <input id="outDocNo" placeholder="Numero documento">
+          <input type="file" id="outFile" accept="application/pdf">
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="outProd">\${state.products.map(p=> \`<option value="\${p.id}">\${p.sku||''} – \${p.name||''}</option>\`).join('')}</select>
+          <input id="outQty" type="number" min="1" value="1">
+          <button id="addOutItem">Aggiungi riga</button>
+        </div>
+        <div id="outItemsWrap" style="margin-top:10px"></div>
+        <div class="right" style="margin-top:10px"><button id="saveOut">Registra uscita</button></div>
+      </div>
+    </div>\`;
+    bindUscita();
+  }
+  if(current==='documenti'){
+    const rows = state.invoicesMeta.slice().sort((a,b)=> new Date(b.date)-new Date(a.date)).map(d=>\`
+      <tr><td>\${dateStr(d.date)}</td><td>\${d.type}</td><td>\${d.name}</td><td>\${d.txId}</td>
+      <td><button class="ghost" data-open="\${d.id}">Apri</button> <button class="ghost" data-del="\${d.id}">Elimina</button></td></tr>\`).join('');
+    v.innerHTML = \`
+      <div class="card">
+        <h3 style="margin:0">Archivio documenti</h3>
+        <div style="overflow:auto;margin-top:8px">
+          <table><thead><tr><th>Data</th><th>Tipo</th><th>Nome</th><th>Tx</th><th></th></tr></thead><tbody>\${rows}</tbody></table>
+        </div>
+      </div>\`;
+    document.querySelectorAll('[data-open]')?.forEach(b=> b.onclick=()=> API.openDoc(b.dataset.open));
+    document.querySelectorAll('[data-del]')?.forEach(b=> b.onclick=async()=>{ await API.deleteDoc(b.dataset.del); await refreshDocs() });
+  }
+  // bind header buttons
+  document.getElementById("btnPull").onclick = async ()=>{ await pull(); await render(); };
+  document.getElementById("btnPush").onclick = async ()=>{ await push(); };
+}
+
+function showProdForm(id){
+  const p = id ? state.products.find(x=>x.id===id) : { stock:0 };
+  const holder = document.createElement('div');
+  holder.className="card";
+  holder.innerHTML = \`
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="pSku" placeholder="SKU" value="\${p?.sku||''}">
+      <input id="pName" placeholder="Nome" value="\${p?.name||''}">
+      <input id="pFormat" placeholder="Formato" value="\${p?.format||''}">
+      <input id="pPrice" type="number" step="0.01" placeholder="Prezzo base" value="\${p?.lastPrice||''}">
+      <input id="pStock" type="number" placeholder="Stock" value="\${p?.stock||0}">
+      <input id="pUnit" placeholder="Unità (pz, ml, g)" value="\${p?.unit||''}">
+      <button id="saveProd">Salva</button>
+    </div>\`;
+  document.getElementById('view').prepend(holder);
+  document.getElementById('saveProd').onclick = async ()=>{
+    const obj = {
+      id: p?.id ?? nextId(state.products),
+      sku: document.getElementById('pSku').value.trim(),
+      name: document.getElementById('pName').value.trim(),
+      format: document.getElementById('pFormat').value.trim(),
+      lastPrice: parseFloat(document.getElementById('pPrice').value)||0,
+      stock: parseFloat(document.getElementById('pStock').value)||0,
+      unit: document.getElementById('pUnit').value.trim()
+    };
+    if (p?.id) {
+      const idx = state.products.findIndex(x=>x.id===p.id);
+      state.products[idx] = obj;
+    } else {
+      state.products.push(obj);
+    }
+    await push(); render();
+  };
+}
+
+let inItems=[], outItems=[];
+function renderItems(where, items, allowPrice){
+  const host = document.getElementById(where);
+  if(!items.length){host.innerHTML=''; return}
+  host.innerHTML = \`
+    <table><thead><tr><th>SKU</th><th>Prodotto</th><th>Q.tà</th>\${allowPrice?'<th>Prezzo</th>':''}<th>Totale</th><th></th></tr></thead><tbody>
+      \${items.map((it,i)=>\`<tr><td>\${it.sku||''}</td><td>\${it.name}</td><td>\${it.qty}</td>\${allowPrice?'<td>'+money(it.unitPrice||0)+'</td>':''}<td>\${money((it.unitPrice||0)*it.qty)}</td><td><button class="ghost" data-rm="\${i}">Rimuovi</button></td></tr>\`).join('')}
+    </tbody></table>\`;
+  host.querySelectorAll('[data-rm]')?.forEach(b=> b.onclick=()=>{ items.splice(Number(b.dataset.rm),1); renderItems(where, items, allowPrice)});
+}
+
+function bindEntrata(){
+  inItems = [];
+  document.getElementById('addInItem').onclick = ()=>{
+    const id = Number(document.getElementById('inProd').value);
+    const qty = Number(document.getElementById('inQty').value)||0;
+    const price = Number(document.getElementById('inPrice').value)||0;
+    const p = state.products.find(x=>x.id===id); if(!p) return;
+    inItems.push({productId:id, sku:p.sku, name:p.name, qty, unitPrice:price});
+    renderItems('inItemsWrap', inItems, true);
+  };
+  document.getElementById('saveIn').onclick = async ()=>{
+    if(!inItems.length) return alert('Aggiungi almeno una riga.');
+    const date = document.getElementById('inDate').value;
+    const supplier = document.getElementById('inSupplier').value.trim();
+    const docNo = document.getElementById('inDocNo').value.trim();
+    const file = document.getElementById('inFile').files[0];
+
+    const tx = { id: nextId(state.transactions), type:'IN', date: date||new Date().toISOString(), supplier, docNo, items: inItems };
+    state.transactions.push(tx);
+    // stock & last price
+    for(const it of inItems){
+      const p = state.products.find(x=>x.id===it.productId); if(!p) continue;
+      p.stock = (p.stock||0) + it.qty;
+      p.lastPrice = it.unitPrice||p.lastPrice;
+    }
+    if(file){
+      const meta = await API.uploadPDF({ txId: tx.id, type:'IN', name: file.name, file });
+      state.invoicesMeta.unshift(meta);
+    }
+    inItems = [];
+    await push(); render();
+  };
+}
+
+function bindUscita(){
+  outItems = [];
+  document.getElementById('addOutItem').onclick = ()=>{
+    const id = Number(document.getElementById('outProd').value);
+    const qty = Number(document.getElementById('outQty').value)||0;
+    const p = state.products.find(x=>x.id===id); if(!p) return;
+    if(qty>(p.stock||0)) return alert(\`Stock insufficiente: \${p.name} (disp. \${p.stock||0})\`);
+    outItems.push({productId:id, sku:p.sku, name:p.name, qty, unitPrice:p.lastPrice||0});
+    renderItems('outItemsWrap', outItems, false);
+  };
+  document.getElementById('saveOut').onclick = async ()=>{
+    if(!outItems.length) return alert('Aggiungi almeno una riga.');
+    const date = document.getElementById('outDate').value;
+    const customer = document.getElementById('outCustomer').value.trim();
+    const docNo = document.getElementById('outDocNo').value.trim();
+    const file = document.getElementById('outFile').files[0];
+
+    const tx = { id: nextId(state.transactions), type:'OUT', date: date||new Date().toISOString(), customer, docNo, items: outItems };
+    state.transactions.push(tx);
+    for(const it of outItems){
+      const p = state.products.find(x=>x.id===it.productId); if(!p) continue;
+      p.stock = (p.stock||0) - it.qty;
+    }
+    if(file){
+      const meta = await API.uploadPDF({ txId: tx.id, type:'OUT', name: file.name, file });
+      state.invoicesMeta.unshift(meta);
+    }
+    outItems = [];
+    await push(); render();
+  };
+}
+
+async function refreshDocs(){
+  state.invoicesMeta = await API.listDocs();
+  render();
+}
+
+// INIT
+(async function init(){
+  try{
+    await pull();
+  }catch(e){
+    console.error(e);
+    alert("Errore di connessione al Cloud. Assicurati di aver deployato con le Functions.");
+  }
+  render();
+})();
+</script>
+</body>
+</html>

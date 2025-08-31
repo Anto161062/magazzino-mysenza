@@ -1,0 +1,7 @@
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["@netlify/blobs"]
+
+[[edge_functions]]
+  path = "/"
+  function = "noop" # placeholder so site deploys even if no edge functions used
